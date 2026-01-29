@@ -182,7 +182,7 @@ def start_chat():
                 data = get_rushing_leaders()
                 leaders = summarize_leaders(data)
                 if leaders:
-                    live_context = "Curent NFL rushing yard leaders:\n" + "\n".join(leaders)
+                    live_context = "Current NFL rushing yard leaders:\n" + "\n".join(leaders)
 
             elif intent == "receiving_leaders":
                 data = get_receiving_leaders()
