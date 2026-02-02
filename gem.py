@@ -1,226 +1,106 @@
-import google.generativeai as genai
 import os
 import requests
-import time
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
-# ------------------ SETUP ------------------
-
 load_dotenv()
-genai.configure(api_key=os.getenv("API_KEY"))
 
-system_instructions = (
-    "You are an expert NFL analyst AI. "
-    "Answer ANY football question including rankings, predictions, player stats, "
-    "historical info, comparisons, and opinions. "
-    "When live data is provided, ALWAYS prioritize it over memory, "
-    "but never refuse to answer if some data is missing."
+# ------------------ CONFIGURATION ------------------
+
+API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    raise ValueError("❌ Missing API_KEY in .env file.")
+
+# Initialize the modern Gemini Client
+client = genai.Client(api_key=API_KEY)
+
+# Context: February 2026 - Super Bowl LX
+CURRENT_DATE = "February 2, 2026"
+SEASON_CONTEXT = (
+    "It is currently February 2, 2026. The NFL is in Super Bowl Week. "
+    "Super Bowl LX features the Seattle Seahawks vs. the New England Patriots "
+    "at Levi's Stadium on February 8. You are an elite NFL analyst. "
+    "Use the provided tools to fetch real-time stats or scores when asked."
 )
 
-model = genai.GenerativeModel(
-    model_name="gemini-3-flash-preview",
-    system_instruction=system_instructions
-)
+# ------------------ LIVE DATA TOOLS ------------------
 
-# ------------------ ESPN ENDPOINTS ------------------
-
-SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-LEADERS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/leaders"
-
-# ------------------ LIVE DATA FUNCTIONS ------------------
-
-def get_scoreboard():
-    return requests.get(SCOREBOARD_URL).json()
-
-def get_passing_leaders():
-    params = {"limit": 5, "category": "passingYards"}
-    return requests.get(LEADERS_URL, params=params).json()
-
-def get_rushing_leaders():
-    params = {"limit": 5, "category": "rushingYards"}
-    return requests.get(LEADERS_URL, params=params).json()
-
-def get_receiving_leaders():
-    params = {"limit": 5, "category": "receivingYards"}
-    return requests.get(LEADERS_URL, params=params).json()
-
-# ------------------ DATA SUMMARIZERS ------------------
-
-def summarize_scoreboard(data):
+def get_nfl_scoreboard():
+    """Fetches the latest NFL scores and schedules from ESPN."""
+    url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
     try:
-        season_type = data.get("season", {}).get("type")
-        week = data.get("week", {}).get("number")
-
-        if season_type == 3:
-            phase = "Postseason"
-        elif season_type == 2:
-            phase = f"Regular Season Week {week}"
-        else:
-            phase = "Preseason"
-
+        response = requests.get(url, timeout=10)
+        data = response.json()
         events = data.get("events", [])
-        completed = [e for e in events if e["status"]["type"]["completed"]]
-
-        latest_game = None
-        if completed:
-            latest = sorted(completed, key=lambda e: e["date"])[-1]
-            comp = latest["competitions"][0]
-            teams = comp["competitors"]
-            t1 = teams[0]
-            t2 = teams[1]
-            latest_game = f"{t1['team']['displayName']} {t1['score']} vs {t2['team']['displayName']} {t2['score']}"
-
-        return {"phase": phase, "latest_game": latest_game}
-    except:
-        return {"phase": "Unknown", "latest_game": None}
-
-def summarize_leaders(data):
-    try:
-        leaders = []
-        for athlete in data["leaders"][0]["leaders"]:
-            leaders.append(
-                f"{athlete['athlete']['displayName']} ({athlete['team']['displayName']}) — {athlete['value']}"
-            )
-        return leaders
-    except:
-        return None
-
-# ------------------ INTENT DETECTION ------------------
-
-def detect_intent(text):
-    t = text.lower()
-    if "passing yards" in t:
-        return "passing_leaders"
-    if "rushing yards" in t:
-        return "rushing_leaders"
-    if "receiving yards" in t:
-        return "receiving_leaders"
-    if "week" in t or "latest" in t or "playoff" in t or "score" in t or "champion" in t:
-        return "scoreboard"
-    return "general"
-
-# ------------------ FALLBACK NFL BRAIN (RATE LIMIT SAFETY) ------------------
-
-def offline_brain(question):
-    q = question.lower()
-
-    if "top 5 qb" in q:
-        return (
-            "Here are my current top 5 NFL quarterbacks:\n"
-            "1. Patrick Mahomes\n"
-            "2. Josh Allen\n"
-            "3. Joe Burrow\n"
-            "4. Lamar Jackson\n"
-            "5. Justin Herbert\n"
-        )
-
-    if "top 5 wr" in q:
-        return (
-            "Here are my current top 5 wide receivers:\n"
-            "1. Tyreek Hill\n"
-            "2. Justin Jefferson\n"
-            "3. Ja'Marr Chase\n"
-            "4. CeeDee Lamb\n"
-            "5. Davante Adams\n"
-        )
-
-    if "top 5 rb" in q:
-        return (
-            "Here are my current top 5 running backs:\n"
-            "1. Christian McCaffrey\n"
-            "2. Derrick Henry\n"
-            "3. Bijan Robinson\n"
-            "4. Jahmyr Gibbs\n"
-            "5. Nick Chubb\n"
-        )
-
-    if "super bowl" in q:
-        return (
-            "Based on current playoff performance and roster strength, "
-            "the top Super Bowl contenders right now are the Chiefs, "
-            "49ers, Ravens, and Bills — with Kansas City slightly favored."
-        )
-
-    return None
-
-# ------------------ GEMINI SAFE CALL ------------------
-
-def safe_gemini(chat, prompt):
-    try:
-        return chat.send_message(prompt)
+        results = []
+        for e in events:
+            name = e.get("name")
+            status = e.get("status", {}).get("type", {}).get("detail")
+            competitors = e['competitions'][0]['competitors']
+            score = " vs ".join([f"{t['team']['displayName']} {t['score']}" for t in competitors])
+            results.append(f"{name}: {score} ({status})")
+        return "\n".join(results) if results else "No recent games found."
     except Exception as e:
-        if "429" in str(e):
-            return None
-        raise e
+        return f"Error fetching scores: {str(e)}"
 
-# ------------------ CHAT LOOP ------------------
+def get_league_leaders(category: str):
+    """
+    Fetches top 10 NFL leaders for a specific statistical category.
+    Supported categories: 'passingYards', 'rushingYards', 'receivingYards', 'sacks', 'interceptions'
+    """
+    # Mapping to handle common natural language phrases from the AI
+    mapping = {
+        "passing yards": "passingYards",
+        "rushing yards": "rushingYards",
+        "receiving yards": "receivingYards",
+        "picks": "interceptions",
+        "ints": "interceptions"
+    }
+    
+    clean_category = mapping.get(category.lower(), category)
+    url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/leaders"
+    params = {"category": clean_category, "limit": 10}
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        leaders = data["leaders"][0]["leaders"]
+        output = [f"{i+1}. {l['athlete']['displayName']} ({l['team']['displayName']}): {l['value']}" 
+                  for i, l in enumerate(leaders)]
+        return "\n".join(output)
+    except Exception:
+        return f"Could not find leaders for the category: {category}."
 
-def start_chat():
-    chat = model.start_chat(history=[])
+# ------------------ CHAT IMPLEMENTATION ------------------
 
-    print("🏈 Hi! I'm your NFL AI with live stats.")
-    print("Ask me anything about players, teams, rankings, stats, or predictions.")
-    print("Type 'exit' to quit.\n")
+def run_nfl_chat():
+    print(f"🏈 NFL AI Analyst - {CURRENT_DATE}")
+    print("Ask about Super Bowl LX, stats, or top 10 lists (type 'exit' to quit).")
+
+    # Create a chat session with automatic function calling enabled
+    # Using 'gemini-2.0-flash' which is the standard for 2026
+    chat = client.chats.create(
+        model="gemini-2.0-flash",
+        config=types.GenerateContentConfig(
+            system_instruction=SEASON_CONTEXT,
+            tools=[get_nfl_scoreboard, get_league_leaders],
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False)
+        )
+    )
 
     while True:
-        user = input("You: ")
-        if user.lower() == "exit":
-            print("Goodbye! 👋")
+        user_input = input("\nUser: ")
+        if user_input.lower() in ["exit", "quit"]:
+            print("Analyst signing off. Enjoy the Super Bowl!")
             break
-
+            
         try:
-            intent = detect_intent(user)
-            live_context = ""
-
-            if intent == "passing_leaders":
-                data = get_passing_leaders()
-                leaders = summarize_leaders(data)
-                if leaders:
-                    live_context = "Current NFL passing yard leaders:\n" + "\n".join(leaders)
-
-            elif intent == "rushing_leaders":
-                data = get_rushing_leaders()
-                leaders = summarize_leaders(data)
-                if leaders:
-                    live_context = "Current NFL rushing yard leaders:\n" + "\n".join(leaders)
-
-            elif intent == "receiving_leaders":
-                data = get_receiving_leaders()
-                leaders = summarize_leaders(data)
-                if leaders:
-                    live_context = "Current NFL receiving yard leaders:\n" + "\n".join(leaders)
-
-            elif intent == "scoreboard":
-                data = get_scoreboard()
-                summary = summarize_scoreboard(data)
-                live_context = f"Current NFL phase: {summary['phase']}\nLatest game: {summary['latest_game']}"
-
-            if live_context:
-                prompt = f"""
-User question:
-{user}
-
-Here is current NFL data:
-{live_context}
-
-Answer clearly and naturally using this data when relevant.
-"""
-            else:
-                prompt = user
-
-            response = safe_gemini(chat, prompt)
-
-            if response:
-                print(f"\nAI: {response.text}\n")
-            else:
-                fallback = offline_brain(user)
-                if fallback:
-                    print(f"\nAI: {fallback}\n")
-                else:
-                    print("\nAI: I'm temporarily rate-limited, but based on current league trends, elite teams and players continue to dominate.\n")
-
+            # Send the message; the SDK handles the back-and-forth for tool execution
+            response = chat.send_message(user_input)
+            print(f"\nAI: {response.text}")
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"\nAI Error: {e}")
 
 if __name__ == "__main__":
-    start_chat()
+    run_nfl_chat()
